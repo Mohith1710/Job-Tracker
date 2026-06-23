@@ -496,93 +496,61 @@ async function doScan() {
   function upd(msg) {
     var el = document.getElementById('connSub');
     if (el) el.textContent = msg;
-    setProgress(0, msg);
     console.log('SCAN:', msg);
   }
 
-  upd('Connecting to Gmail API...');
+  upd('Connecting to Gmail...');
 
-  // Verify token works
+  // Verify token
   try {
     var testRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
       headers: {Authorization: 'Bearer ' + gToken}
     });
     var testData = await testRes.json();
     if (testData.error) {
-      upd('Token expired — redirecting to sign in again...');
-      setTimeout(function() { reAuth(); }, 2000);
+      upd('Token expired — re-authenticating...');
+      setTimeout(function() { reAuth(); }, 1500);
       return;
     }
-    upd('Connected as ' + (testData.emailAddress || '') + '. Searching...');
+    upd('Connected as ' + (testData.emailAddress || '') + '. Fetching all recent emails...');
   } catch(e) {
-    upd('Connection failed — Please try Re-auth.');
+    upd('Connection failed — click Re-auth and try again.');
     return;
   }
 
-  // Individual queries to maximise coverage
-  var queries = [
-    'subject:application',
-    'subject:interview',
-    'subject:offer',
-    'subject:rejected',
-    'subject:regret',
-    'subject:unfortunately',
-    'subject:congratulations',
-    'subject:shortlisted',
-    'subject:selected',
-    'subject:thank you for applying',
-    'subject:your application',
-    'subject:we received',
-    'subject:next steps',
-    'subject:moving forward',
-    'subject:not moving forward',
-    'subject:update on your application',
-    'subject:status update',
-    'subject:hiring',
-    'subject:position',
-    'from:greenhouse-mail.io',
-    'from:workday.com',
-    'from:myworkdayjobs.com',
-    'from:icims.com',
-    'from:lever.co',
-    'from:smartrecruiters.com',
-    'from:jobvite.com',
-    'from:taleo.net',
-    'from:careers',
-    'from:recruiting',
-    'from:hiring',
-    'from:talent'
-  ];
+  // Strategy: pull last 500 emails with NO filter, then let AI decide what's a job email
+  // This catches ALL company career page emails regardless of sender or subject
+  var pageToken = null;
+  var fetchCount = 0;
+  var maxFetch = 500;
 
-  for (var qi = 0; qi < queries.length; qi++) {
-    upd('Searching (' + (qi+1) + '/' + queries.length + '): ' + queries[qi]);
+  upd('Fetching your recent emails (no filter)...');
+
+  while (fetchCount < maxFetch) {
     try {
-      var qres = await fetch(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='
-          + encodeURIComponent(queries[qi]) + '&maxResults=50',
-        {headers: {Authorization: 'Bearer ' + gToken}}
-      );
-      var qdata = await qres.json();
-      if (qdata.messages) {
-        qdata.messages.forEach(function(m) { allIds[m.id] = true; });
+      var url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=100&includeSpamTrash=false';
+      if (pageToken) url += '&pageToken=' + pageToken;
+      var res = await fetch(url, {headers: {Authorization: 'Bearer ' + gToken}});
+      var data = await res.json();
+      if (data.error) { console.log('Fetch error:', data.error.message); break; }
+      if (data.messages) {
+        data.messages.forEach(function(m) { allIds[m.id] = true; });
+        fetchCount += data.messages.length;
+        upd('Fetched ' + fetchCount + ' emails so far...');
       }
-      upd('Searching (' + (qi+1) + '/' + queries.length + ') — ' + Object.keys(allIds).length + ' unique emails found so far...');
-    } catch(e) {}
+      if (!data.nextPageToken) break;
+      pageToken = data.nextPageToken;
+    } catch(e) { break; }
   }
 
-  var ids = Object.keys(allIds).slice(0, 200);
-  upd('Found ' + ids.length + ' unique emails. Reading details...');
+  var ids = Object.keys(allIds).slice(0, 500);
+  upd('Reading subject lines from ' + ids.length + ' emails...');
 
-  if (ids.length === 0) {
-    upd('No job emails found.');
-    setTimeout(function() { show('app'); setupUserUI(); render(); }, 2000);
-    return;
-  }
-
+  // Read metadata in batches of 10
   var details = [];
   for (var j = 0; j < ids.length; j += 10) {
     var batch = ids.slice(j, Math.min(j + 10, ids.length));
-    upd('Reading emails ' + (j+1) + '-' + Math.min(j+10, ids.length) + ' of ' + ids.length + '...');
+    upd('Reading ' + (j+1) + ' to ' + Math.min(j+10, ids.length) + ' of ' + ids.length + '...');
     var batchResults = await Promise.all(batch.map(function(id) {
       return fetch(
         'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id
@@ -599,14 +567,66 @@ async function doScan() {
         if (h.name === 'From') from = h.value;
         if (h.name === 'Date') date = h.value;
       });
-      details.push({subject: subj, from: from, date: date, snippet: d.snippet || ''});
+      // Pre-filter — keep only emails that look job-related
+      var combined = (subj + ' ' + from).toLowerCase();
+      var jobWords = ['application', 'apply', 'applied', 'interview', 'offer', 'position',
+        'role', 'hiring', 'career', 'recruit', 'resume', 'job', 'shortlist', 'select',
+        'unfortunately', 'regret', 'thank you for', 'we received', 'next step',
+        'moving forward', 'congratulation', 'talent', 'opportunity', 'opening',
+        'screening', 'assessment', 'candidate', 'vacancy', 'opening'];
+      var keep = false;
+      jobWords.forEach(function(w) { if (combined.indexOf(w) >= 0) keep = true; });
+      if (keep) details.push({subject: subj, from: from, date: date});
     });
   }
 
-  upd('Analysing ' + details.length + ' emails...');
-  var parsed = parseJobs(details);
-  upd('Extracted ' + parsed.length + ' job applications. Importing...');
-  var imported = importJobs(parsed);
+  upd('Found ' + details.length + ' job-related emails. Extracting details...');
+
+  if (details.length === 0) {
+    upd('No job emails detected. Try adding applications manually.');
+    setTimeout(function() { show('app'); setupUserUI(); render(); }, 2000);
+    return;
+  }
+
+  // Use AI to extract job details in batches of 20
+  var allParsed = [];
+  var batchSize = 20;
+  for (var b = 0; b < details.length; b += batchSize) {
+    var chunk = details.slice(b, Math.min(b + batchSize, details.length));
+    upd('Extracting job info from batch ' + (Math.floor(b/batchSize)+1) + ' of ' + Math.ceil(details.length/batchSize) + '...');
+    var emailText = chunk.map(function(e, idx) {
+      return (idx+1) + '. Subject: ' + e.subject + ' | From: ' + e.from + ' | Date: ' + e.date;
+    }).join('\n');
+    try {
+      var aiRes = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          messages: [{
+            role: 'user',
+            content: 'Extract job details from emails. JSON array only. Each item: {company, role, email, date YYYY-MM-DD, status Applied/Interview/Offer/Rejected/Ghosted, resp yes/no, notes}. Emails: ' + emailText
+          }]
+        })
+      });
+      var aiData = await aiRes.json();
+      var aiText = aiData.content && aiData.content[0] ? aiData.content[0].text : '[]';
+      aiText = aiText.replace(/```json|```/g, '').trim();
+      var parsed = JSON.parse(aiText);
+      if (Array.isArray(parsed)) {
+        allParsed = allParsed.concat(parsed);
+      }
+    } catch(e) {
+      console.log('AI batch error:', e.message);
+      // Fallback to rule-based for this batch
+      var fallback = parseJobs(chunk);
+      allParsed = allParsed.concat(fallback);
+    }
+  }
+
+  upd('Extracted ' + allParsed.length + ' applications. Importing...');
+  var imported = importJobs(allParsed);
   upd('Done! Imported ' + imported + ' new applications.');
 
   setTimeout(function() {
@@ -1045,7 +1065,7 @@ function exportCSV() {
   });
   var csv = rows.map(function(r) {
     return r.map(function(v) { return '"' + String(v).replace(/"/g, '""') + '"'; }).join(',');
-  }).join('\n');
+  }).join(' | ');
   var a = document.createElement('a');
   a.href = 'data:text/csv;charset=utf-8,' + encodeURIComponent(csv);
   a.download = 'job-applications.csv';
