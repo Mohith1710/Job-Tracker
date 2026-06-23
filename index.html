@@ -493,44 +493,106 @@ function runScan() {
 async function doScan() {
   var allIds = {};
 
-  // Use a single broad query to find all job-related emails fast
-  var broadQueries = [
-    'subject:application OR subject:interview OR subject:offer OR subject:hiring OR subject:shortlisted OR subject:rejected OR subject:regret OR subject:unfortunately OR subject:congratulations',
-    'from:greenhouse-mail OR from:workday OR from:lever OR from:icims OR from:myworkdayjobs OR from:careers OR from:recruiting OR from:talent'
+  function upd(msg) {
+    var el = document.getElementById('connSub');
+    if (el) el.textContent = msg;
+    setProgress(0, msg);
+    console.log('SCAN:', msg);
+  }
+
+  upd('Connecting to Gmail API...');
+
+  // Verify token works
+  try {
+    var testRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
+      headers: {Authorization: 'Bearer ' + gToken}
+    });
+    var testData = await testRes.json();
+    if (testData.error) {
+      upd('Token expired — redirecting to sign in again...');
+      setTimeout(function() { reAuth(); }, 2000);
+      return;
+    }
+    upd('Connected as ' + (testData.emailAddress || '') + '. Searching...');
+  } catch(e) {
+    upd('Connection failed — Please try Re-auth.');
+    return;
+  }
+
+  // Individual queries to maximise coverage
+  var queries = [
+    'subject:application',
+    'subject:interview',
+    'subject:offer',
+    'subject:rejected',
+    'subject:regret',
+    'subject:unfortunately',
+    'subject:congratulations',
+    'subject:shortlisted',
+    'subject:selected',
+    'subject:thank you for applying',
+    'subject:your application',
+    'subject:we received',
+    'subject:next steps',
+    'subject:moving forward',
+    'subject:not moving forward',
+    'subject:update on your application',
+    'subject:status update',
+    'subject:hiring',
+    'subject:position',
+    'from:greenhouse-mail.io',
+    'from:workday.com',
+    'from:myworkdayjobs.com',
+    'from:icims.com',
+    'from:lever.co',
+    'from:smartrecruiters.com',
+    'from:jobvite.com',
+    'from:taleo.net',
+    'from:careers',
+    'from:recruiting',
+    'from:hiring',
+    'from:talent'
   ];
 
-  setProgress(15, 'Searching inbox...');
-
-  for (var i = 0; i < broadQueries.length; i++) {
+  for (var qi = 0; qi < queries.length; qi++) {
+    upd('Searching (' + (qi+1) + '/' + queries.length + '): ' + queries[qi]);
     try {
-      var url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages'
-        + '?q=' + encodeURIComponent(broadQueries[i])
-        + '&maxResults=50';
-      var res = await fetch(url, {headers: {Authorization: 'Bearer ' + gToken}});
-      var data = await res.json();
-      if (data.messages) {
-        data.messages.forEach(function(m) { allIds[m.id] = true; });
+      var qres = await fetch(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages?q='
+          + encodeURIComponent(queries[qi]) + '&maxResults=50',
+        {headers: {Authorization: 'Bearer ' + gToken}}
+      );
+      var qdata = await qres.json();
+      if (qdata.messages) {
+        qdata.messages.forEach(function(m) { allIds[m.id] = true; });
       }
+      upd('Searching (' + (qi+1) + '/' + queries.length + ') — ' + Object.keys(allIds).length + ' unique emails found so far...');
     } catch(e) {}
   }
 
-  var ids = Object.keys(allIds).slice(0, 40);
-  setProgress(40, 'Found ' + ids.length + ' emails — reading...');
+  var ids = Object.keys(allIds).slice(0, 200);
+  upd('Found ' + ids.length + ' unique emails. Reading details...');
 
-  // Batch fetch metadata in parallel (groups of 5)
+  if (ids.length === 0) {
+    upd('No job emails found.');
+    setTimeout(function() { show('app'); setupUserUI(); render(); }, 2000);
+    return;
+  }
+
   var details = [];
-  for (var j = 0; j < ids.length; j += 5) {
-    var batch = ids.slice(j, j + 5);
-    var promises = batch.map(function(id) {
+  for (var j = 0; j < ids.length; j += 10) {
+    var batch = ids.slice(j, Math.min(j + 10, ids.length));
+    upd('Reading emails ' + (j+1) + '-' + Math.min(j+10, ids.length) + ' of ' + ids.length + '...');
+    var batchResults = await Promise.all(batch.map(function(id) {
       return fetch(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date',
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id
+          + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date',
         {headers: {Authorization: 'Bearer ' + gToken}}
       ).then(function(r) { return r.json(); }).catch(function() { return null; });
-    });
-    var results = await Promise.all(promises);
-    results.forEach(function(d) {
+    }));
+    batchResults.forEach(function(d) {
       if (!d || d.error) return;
-      var hdrs = d.payload && d.payload.headers ? d.payload.headers : [];
+      var hdrs = (d.payload && d.payload.headers) ? d.payload.headers : [];
       var subj = '', from = '', date = '';
       hdrs.forEach(function(h) {
         if (h.name === 'Subject') subj = h.value;
@@ -539,21 +601,20 @@ async function doScan() {
       });
       details.push({subject: subj, from: from, date: date, snippet: d.snippet || ''});
     });
-    setProgress(40 + Math.round(((j + 5) / ids.length) * 45), 'Reading emails...');
   }
 
-  setProgress(90, 'Extracting job details...');
+  upd('Analysing ' + details.length + ' emails...');
   var parsed = parseJobs(details);
-  setProgress(100, 'Done!');
-
-  document.getElementById('prog').style.display = 'none';
-  document.getElementById('progTxt').style.display = 'none';
-  var btn2 = document.getElementById('scanBtn');
-  if (btn2) { btn2.disabled = false; btn2.textContent = '↻ Scan Gmail'; }
-
+  upd('Extracted ' + parsed.length + ' job applications. Importing...');
   var imported = importJobs(parsed);
-  showToast('Imported ' + imported + ' applications from Gmail');
-  render();
+  upd('Done! Imported ' + imported + ' new applications.');
+
+  setTimeout(function() {
+    show('app');
+    setupUserUI();
+    render();
+    showToast('Imported ' + imported + ' applications from Gmail');
+  }, 1500);
 }
 
 function parseJobs(emails) {
