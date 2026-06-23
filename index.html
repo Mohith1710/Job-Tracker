@@ -427,7 +427,8 @@ body{font-family:'Google Sans','Segoe UI',system-ui,sans-serif;background:var(--
 // Uses Google Identity Services implicit flow (no backend needed)
 // Scopes: read-only Gmail access
 const SCOPES='https://www.googleapis.com/auth/gmail.readonly';
-const CLIENT_ID=''; // User must fill this in OR we use token-based approach
+const CLIENT_ID='709096668492-k7uupqafl86svoegmj3dahf7nr0t7gjv.apps.googleusercontent.com';
+const REDIRECT_URI=window.location.origin+window.location.pathname.replace(/\/$/,'');
 let gToken=null, userEmail='', userName='', jobs=[], filter='all', editIdx=null, replyIdx=null, draftMode='followup';
 
 // ── COLORS ──
@@ -442,62 +443,36 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.cla
 
 // ── AUTH ──
 function startGoogleAuth(){
-  document.getElementById('authScreen').style.display='none';
-  document.getElementById('connectingScreen').style.display='flex';
-  setStep(1,'active');
-  // Try immediately if GSI already loaded, else wait for it
-  if(typeof google !== 'undefined' && google.accounts){
-    initGoogleAuth();
-  } else {
-    // Load script if not already loaded
-    if(!document.querySelector('script[src*="gsi/client"]')){
-      const s=document.createElement('script');
-      s.src='https://accounts.google.com/gsi/client';
-      s.onload=initGoogleAuth;
-      s.onerror=()=>showAuthError('Could not load Google sign-in library. Check your internet connection.');
-      document.head.appendChild(s);
-    } else {
-      // Script tag exists but not loaded yet — wait
-      let attempts=0;
-      const wait=setInterval(()=>{
-        attempts++;
-        if(typeof google !== 'undefined' && google.accounts){
-          clearInterval(wait);
-          initGoogleAuth();
-        } else if(attempts>20){
-          clearInterval(wait);
-          showAuthError('Google sign-in took too long to load. Please refresh and try again.');
-        }
-      },300);
-    }
-  }
+  // Save current jobs before redirect
+  persist();
+  // Build Google OAuth URL — redirect flow, no popup needed
+  const params=new URLSearchParams({
+    client_id: CLIENT_ID,
+    redirect_uri: REDIRECT_URI,
+    response_type: 'token',
+    scope: SCOPES,
+    include_granted_scopes: 'true',
+    prompt: 'consent'
+  });
+  window.location.href='https://accounts.google.com/o/oauth2/v2/auth?'+params.toString();
 }
 
 function initGoogleAuth(){
+  // Called after redirect back — token is in URL hash
+  const hash=new URLSearchParams(window.location.hash.substring(1));
+  gToken=hash.get('access_token');
+  if(!gToken){showAuthError('No access token received. Please try again.');return;}
+  // Clean up URL
+  history.replaceState(null,'',window.location.pathname);
+  // Show connecting screen and scan
+  document.getElementById('authScreen').style.display='none';
+  document.getElementById('connectingScreen').style.display='flex';
   setStep(1,'done');setStep(2,'active');
-  try{
-    const client=google.accounts.oauth2.initTokenClient({
-      client_id:'709096668492-k7uupqafl86svoegmj3dahf7nr0t7gjv.apps.googleusercontent.com',
-      scope:SCOPES,
-      callback:(resp)=>{
-        if(resp.error){
-          showAuthError('Authorization failed: '+resp.error+'. Make sure you added yourself as a test user in Google Cloud Console.');
-          return;
-        }
-        gToken=resp.access_token;
-        setStep(2,'done');
-        fetchUserInfo().then(()=>{
-          setStep(3,'active');
-          document.getElementById('connSub').textContent='Scanning your inbox for job emails...';
-          scanGmailReal();
-        });
-      }
-    });
-    setStep(1,'done');
-    client.requestAccessToken({prompt:'consent'});
-  }catch(e){
-    showAuthError('Google sign-in error: '+e.message+'. Please refresh and try again.');
-  }
+  fetchUserInfo().then(()=>{
+    setStep(2,'done');setStep(3,'active');
+    document.getElementById('connSub').textContent='Scanning your inbox for job emails...';
+    scanGmailReal();
+  });
 }
 
 async function fetchUserInfo(){
@@ -1019,13 +994,34 @@ function init(){
   try{const s=localStorage.getItem('jt-v4');if(s)jobs=JSON.parse(s);}catch(e){}
   userEmail=localStorage.getItem('jt-email')||'';
   userName=localStorage.getItem('jt-name')||'';
+
+  // Check if we just came back from Google OAuth redirect
+  const hash=new URLSearchParams(window.location.hash.substring(1));
+  const tokenFromRedirect=hash.get('access_token');
+
+  if(tokenFromRedirect){
+    // Coming back from Google sign-in
+    gToken=tokenFromRedirect;
+    initGoogleAuth();
+    return;
+  }
+
   // If already had a session, go straight to app
   if(jobs.length||userEmail){
     document.getElementById('authScreen').style.display='none';
     document.getElementById('appScreen').style.display='block';
-    if(userEmail){document.getElementById('userChip').style.display='flex';document.getElementById('userEmail').textContent=userEmail;document.getElementById('userAv').textContent=userEmail[0].toUpperCase();document.getElementById('scanLabel').textContent=`Scanning ${userEmail}`;}
+    if(userEmail){
+      document.getElementById('userChip').style.display='flex';
+      document.getElementById('userEmail').textContent=userEmail;
+      document.getElementById('userAv').textContent=userEmail[0].toUpperCase();
+      document.getElementById('scanLabel').textContent='Scanning '+userEmail;
+    }
     render();
+    return;
   }
+
+  // Show auth screen
+  document.getElementById('authScreen').style.display='flex';
 }
 init();
 </script>
