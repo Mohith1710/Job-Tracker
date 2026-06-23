@@ -501,7 +501,6 @@ async function doScan() {
 
   upd('Connecting to Gmail...');
 
-  // Verify token
   try {
     var testRes = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/profile', {
       headers: {Authorization: 'Bearer ' + gToken}
@@ -512,41 +511,43 @@ async function doScan() {
       setTimeout(function() { reAuth(); }, 1500);
       return;
     }
-    upd('Connected as ' + (testData.emailAddress || '') + '. Fetching all recent emails...');
+    upd('Connected as ' + (testData.emailAddress || '') + '. Fetching emails...');
   } catch(e) {
-    upd('Connection failed — click Re-auth and try again.');
+    upd('Connection failed — click Re-auth.');
     return;
   }
 
-  // Strategy: pull last 500 emails with NO filter, then let AI decide what's a job email
-  // This catches ALL company career page emails regardless of sender or subject
+  // Fetch emails going back 90 days using date filter
+  var ninetyDaysAgo = new Date();
+  ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+  var afterDate = Math.floor(ninetyDaysAgo.getTime() / 1000);
+
   var pageToken = null;
   var fetchCount = 0;
-  var maxFetch = 500;
 
-  upd('Fetching your recent emails (no filter)...');
+  upd('Fetching all emails from last 90 days...');
 
-  while (fetchCount < maxFetch) {
+  while (fetchCount < 1000) {
     try {
-      var url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=100&includeSpamTrash=false';
-      if (pageToken) url += '&pageToken=' + pageToken;
+      var url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages'
+        + '?maxResults=100'
+        + '&q=after:' + afterDate
+        + '&includeSpamTrash=false';
+      if (pageToken) url += '&pageToken=' + encodeURIComponent(pageToken);
       var res = await fetch(url, {headers: {Authorization: 'Bearer ' + gToken}});
       var data = await res.json();
-      if (data.error) { console.log('Fetch error:', data.error.message); break; }
-      if (data.messages) {
-        data.messages.forEach(function(m) { allIds[m.id] = true; });
-        fetchCount += data.messages.length;
-        upd('Fetched ' + fetchCount + ' emails so far...');
-      }
+      if (data.error || !data.messages) break;
+      data.messages.forEach(function(m) { allIds[m.id] = true; });
+      fetchCount += data.messages.length;
+      upd('Fetched ' + fetchCount + ' emails so far...');
       if (!data.nextPageToken) break;
       pageToken = data.nextPageToken;
     } catch(e) { break; }
   }
 
-  var ids = Object.keys(allIds).slice(0, 500);
+  var ids = Object.keys(allIds);
   upd('Reading subject lines from ' + ids.length + ' emails...');
 
-  // Read metadata in batches of 10
   var details = [];
   for (var j = 0; j < ids.length; j += 10) {
     var batch = ids.slice(j, Math.min(j + 10, ids.length));
@@ -561,42 +562,59 @@ async function doScan() {
     batchResults.forEach(function(d) {
       if (!d || d.error) return;
       var hdrs = (d.payload && d.payload.headers) ? d.payload.headers : [];
-      var subj = '', from = '', date = '';
+      var subj = '', from = '', dateRaw = '';
       hdrs.forEach(function(h) {
         if (h.name === 'Subject') subj = h.value;
         if (h.name === 'From') from = h.value;
-        if (h.name === 'Date') date = h.value;
+        if (h.name === 'Date') dateRaw = h.value;
       });
-      // Pre-filter — keep only emails that look job-related
+
+      // Parse date properly from Gmail header format
+      // Gmail Date header: "Mon, 22 Jun 2026 10:30:00 +0000"
+      var dateStr = '';
+      if (dateRaw) {
+        try {
+          var parsed = new Date(dateRaw);
+          if (!isNaN(parsed.getTime())) {
+            // Use UTC date to avoid timezone shift
+            var y = parsed.getUTCFullYear();
+            var mo = String(parsed.getUTCMonth() + 1).padStart(2, '0');
+            var dy = String(parsed.getUTCDate()).padStart(2, '0');
+            dateStr = y + '-' + mo + '-' + dy;
+          }
+        } catch(de) {}
+      }
+
+      // Pre-filter job emails
       var combined = (subj + ' ' + from).toLowerCase();
       var jobWords = ['application', 'apply', 'applied', 'interview', 'offer', 'position',
         'role', 'hiring', 'career', 'recruit', 'resume', 'job', 'shortlist', 'select',
         'unfortunately', 'regret', 'thank you for', 'we received', 'next step',
-        'moving forward', 'congratulation', 'talent', 'opportunity', 'opening',
-        'screening', 'assessment', 'candidate', 'vacancy', 'opening'];
+        'moving forward', 'congratulation', 'talent', 'opportunity', 'screening',
+        'assessment', 'candidate', 'vacancy'];
       var keep = false;
       jobWords.forEach(function(w) { if (combined.indexOf(w) >= 0) keep = true; });
-      if (keep) details.push({subject: subj, from: from, date: date});
+      if (keep) details.push({subject: subj, from: from, date: dateStr});
     });
   }
 
-  upd('Found ' + details.length + ' job-related emails. Extracting details...');
+  upd('Found ' + details.length + ' job-related emails. Extracting with AI...');
 
   if (details.length === 0) {
-    upd('No job emails detected. Try adding applications manually.');
+    upd('No job emails found.');
     setTimeout(function() { show('app'); setupUserUI(); render(); }, 2000);
     return;
   }
 
-  // Use AI to extract job details in batches of 20
+  // Use AI in batches of 20
   var allParsed = [];
   var batchSize = 20;
   for (var b = 0; b < details.length; b += batchSize) {
     var chunk = details.slice(b, Math.min(b + batchSize, details.length));
-    upd('Extracting job info from batch ' + (Math.floor(b/batchSize)+1) + ' of ' + Math.ceil(details.length/batchSize) + '...');
+    upd('AI extracting batch ' + (Math.floor(b/batchSize)+1) + ' of ' + Math.ceil(details.length/batchSize) + '...');
     var emailText = chunk.map(function(e, idx) {
       return (idx+1) + '. Subject: ' + e.subject + ' | From: ' + e.from + ' | Date: ' + e.date;
-    }).join('\n');
+    }).join(' || ');
     try {
       var aiRes = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST',
@@ -606,7 +624,7 @@ async function doScan() {
           max_tokens: 2000,
           messages: [{
             role: 'user',
-            content: 'Extract job details from emails. JSON array only. Each item: {company, role, email, date YYYY-MM-DD, status Applied/Interview/Offer/Rejected/Ghosted, resp yes/no, notes}. Emails: ' + emailText
+            content: 'Extract job applications from these emails. Return ONLY a valid JSON array. Each object: {company, role, email, date, status, resp, notes}. date must use the EXACT date provided in the email (format YYYY-MM-DD, do not change it). status: Interview/Offer/Rejected/Applied. resp: yes if Interview/Offer/Rejected else no. Skip non-job emails. Emails: ' + emailText
           }]
         })
       });
@@ -614,12 +632,8 @@ async function doScan() {
       var aiText = aiData.content && aiData.content[0] ? aiData.content[0].text : '[]';
       aiText = aiText.replace(/```json|```/g, '').trim();
       var parsed = JSON.parse(aiText);
-      if (Array.isArray(parsed)) {
-        allParsed = allParsed.concat(parsed);
-      }
+      if (Array.isArray(parsed)) allParsed = allParsed.concat(parsed);
     } catch(e) {
-      console.log('AI batch error:', e.message);
-      // Fallback to rule-based for this batch
       var fallback = parseJobs(chunk);
       allParsed = allParsed.concat(fallback);
     }
