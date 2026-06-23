@@ -232,6 +232,7 @@ body{font-family:system-ui,sans-serif;background:#f8f9fa;color:#202124;min-heigh
           <div class="scan-sub" id="scanSubTxt">Find applications, interviews and offers automatically</div>
         </div>
         <button class="scan-btn" id="scanBtn" onclick="runScan()">&#x21BB; Scan Gmail</button>
+        <button class="scan-btn" style="background:#5f6368;margin-left:6px" onclick="reAuth()">&#x1F511; Re-auth</button>
       </div>
       <div class="prog" id="prog"><div class="prog-fill" id="progFill"></div></div>
       <div class="prog-txt" id="progTxt"></div>
@@ -448,18 +449,45 @@ function setupUserUI() {
 }
 
 // ── GMAIL SCAN ──
+function setProgress(pct, txt) {
+  var fill = document.getElementById('progFill');
+  var ptxt = document.getElementById('progTxt');
+  var prog = document.getElementById('prog');
+  if (fill) fill.style.width = pct + '%';
+  if (ptxt) { ptxt.textContent = txt; ptxt.style.display = 'block'; }
+  if (prog) prog.style.display = 'block';
+}
+
+function reAuth() {
+  // Clear token and redirect to Google sign in again
+  gToken = null;
+  localStorage.removeItem('jt-email');
+  localStorage.removeItem('jt-name');
+  userEmail = '';
+  userName = '';
+  var params = 'client_id=' + encodeURIComponent(CLIENT_ID)
+    + '&redirect_uri=' + encodeURIComponent(window.location.href.split('#')[0])
+    + '&response_type=token'
+    + '&scope=' + encodeURIComponent(SCOPES)
+    + '&prompt=consent'
+    + '&include_granted_scopes=true';
+  window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+}
+
 function runScan() {
   if (!gToken) {
     show('auth');
     return;
   }
   var btn = document.getElementById('scanBtn');
-  btn.disabled = true;
-  btn.textContent = 'Scanning...';
-  document.getElementById('prog').style.display = 'block';
-  document.getElementById('progTxt').style.display = 'block';
+  if (btn) { btn.disabled = true; btn.textContent = 'Scanning...'; }
   setProgress(10, 'Searching inbox...');
-  doScan();
+  doScan().catch(function(e) {
+    console.log('Scan error:', e);
+    show('app');
+    render();
+    showToast('Scan failed — try signing in again');
+  });
 }
 
 async function doScan() {
@@ -532,6 +560,11 @@ function parseJobs(emails) {
   var results = [];
   var seen = {};
 
+  console.log('parseJobs: total emails to process:', emails.length);
+  emails.slice(0, 5).forEach(function(e) {
+    console.log('Sample email - Subject:', e.subject, '| From:', e.from);
+  });
+
   emails.forEach(function(e) {
     var subj = (e.subject || '').toLowerCase();
     var from = e.from || '';
@@ -544,7 +577,10 @@ function parseJobs(emails) {
       'unfortunately', 'regret', 'thank you for', 'we received your'];
     var isJob = false;
     jobKeywords.forEach(function(k) { if (combined.indexOf(k) >= 0) isJob = true; });
-    if (!isJob) return;
+    if (!isJob) {
+      console.log('SKIPPED (not job):', e.subject);
+      return;
+    }
 
     // Extract company from sender
     var company = '';
@@ -573,7 +609,11 @@ function parseJobs(emails) {
       }
     }
 
-    if (!company || company.length < 2) return;
+    if (!company || company.length < 2) {
+      console.log('SKIPPED (no company):', e.subject, '| from:', from);
+      return;
+    }
+    console.log('MATCHED:', company, '|', e.subject);
 
     // Dedup by company name
     var compKey = company.toLowerCase().replace(/[^a-z]/g, '').slice(0, 15);
