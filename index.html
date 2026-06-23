@@ -562,7 +562,7 @@ async function scanGmailReal(){
       const date=e.date?new Date(e.date).toISOString().split('T')[0]:'';
       // Extract company from sender name or subject
       let company='';
-      const fromMatch=from.match(/^"?([^"<@]+)"?\s*(?:@\s*\S+)?\s*</);
+      const fromMatch=from.match(/^"?([^"<@]+)"?\s*</);
       if(fromMatch) company=fromMatch[1].replace(/hiring|team|careers|recruiting|hr|noreply|no-reply/gi,'').trim();
       if(!company){
         const subjMatch=subj.match(/(?:at|from|with|to)\s+([A-Z][^|!?,]+?)(?:\s*[|!?,]|\s*$)/i);
