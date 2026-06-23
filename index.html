@@ -631,13 +631,15 @@ function showDebugInfo(details,debugLog){
   const banner=document.getElementById('scanBanner');
   const extra=document.createElement('div');
   extra.style.cssText='margin-top:12px;background:#fce8e6;border-radius:8px;padding:12px 14px;font-size:12px;';
-  extra.innerHTML=`
-    <div style="font-weight:600;color:#b31412;margin-bottom:6px">0 job emails detected — here's what we found:</div>
-    <div style="color:#d93025;margin-bottom:8px;font-size:11px;line-height:1.6">${debugLog.map(l=>`• ${l}`).join('<br/>')}</div>
-    ${details.length>0?`<div style="font-weight:600;color:#b31412;margin-bottom:4px">Email subjects found (first 10):</div>
-    <div style="color:#d93025;font-size:11px;line-height:1.8">${details.slice(0,10).map(d=>`• ${d.subject||'(no subject)'} — from: ${d.from||'unknown'}`).join('<br/>')}</div>`:'<div style="color:#d93025">No emails found at all — Gmail API may not have permission or inbox may be empty.</div>'}
-    <div style="margin-top:8px;color:#5f6368;font-size:11px">Copy the subjects above and paste them here in Claude chat so I can fix the search terms.</div>
-  `;
+  const logHtml=debugLog.map(function(l){return '• '+l;}).join('<br/>');
+  const subjHtml=details.slice(0,10).map(function(d){return '• '+(d.subject||'(no subject)')+' — from: '+(d.from||'unknown');}).join('<br/>');
+  const bodyHtml=details.length>0
+    ?'<div style="font-weight:600;color:#b31412;margin-bottom:4px">Email subjects found (first 10):</div><div style="color:#d93025;font-size:11px;line-height:1.8">'+subjHtml+'</div>'
+    :'<div style="color:#d93025">No emails found — inbox may be empty or Gmail API permission not granted.</div>';
+  extra.innerHTML='<div style="font-weight:600;color:#b31412;margin-bottom:6px">0 job emails detected</div>'
+    +'<div style="color:#d93025;margin-bottom:8px;font-size:11px;line-height:1.6">'+logHtml+'</div>'
+    +bodyHtml
+    +'<div style="margin-top:8px;color:#5f6368;font-size:11px">Copy the subjects above and paste them in Claude chat to fix search terms.</div>';
   banner.appendChild(extra);
 }
 
@@ -788,7 +790,7 @@ function render(){
     <div class="sc green"><div class="sc-lbl">Response rate</div><div class="sc-val">${rr}%</div><div class="sc-sub">${resp} of ${jobs.length} replied</div></div>
     <div class="sc amber"><div class="sc-lbl">Interviews</div><div class="sc-val">${st.Interview}</div><div class="sc-sub">${st.Offer} offer${st.Offer!==1?'s':''} received</div></div>
     <div class="sc red"><div class="sc-lbl">Awaiting</div><div class="sc-val">${jobs.filter(j=>j.resp==='no').length}</div><div class="sc-sub">${st.Ghosted} ghosted · ${st.Rejected} rejected</div></div>`;
-  const sub=userEmail?`${jobs.length} applications · ${userEmail}`:`${jobs.length} applications`;
+  const sub=userEmail?(jobs.length+' applications · '+userEmail):`${jobs.length} applications`;
   document.getElementById('hSub').textContent=sub;
   document.getElementById('cntLbl').textContent=`${vis.length} result${vis.length!==1?'s':''}`;
 
@@ -936,7 +938,7 @@ async function genDraft(){
   const j=jobs[replyIdx];const d=days(j.date);
   const name=userName||'Mohith Chandra';
   const map={
-    followup:`Write a short professional follow-up email from ${name} to a recruiter at ${j.company} for ${j.role}. Applied ${d!==null?`${d} days`:'some time'} ago. Status: ${j.status}. Under 90 words. Email body only.`,
+    followup:'Write a short professional follow-up email from '+name+' to a recruiter at '+j.company+' for '+j.role+'. Applied '+(d!==null?d+' days':'some time')+' ago. Status: '+j.status+'. Under 90 words. Email body only.',
     thankyou:`Write a genuine thank-you email from ${name} after interviewing at ${j.company} for ${j.role}. Warm and professional. Under 80 words. Email body only.`,
     negotiate:`Write a confident salary negotiation email from ${name} for a ${j.role} offer from ${j.company}. Polite but firm. Under 100 words. Email body only.`,
     withdraw:`Write a graceful withdrawal email from ${name} for the ${j.role} application at ${j.company}. Professional, keeps door open. Under 70 words. Email body only.`
@@ -958,12 +960,12 @@ async function openAITips(idx){
   const j=jobs[idx];const d=days(j.date);
   const opts=['Should I follow up?','Interview prep tips','How to improve my chances','Smart questions to ask'];
   const prompts=[
-    `I'm ${userName||'a job seeker'}. Applied for ${j.role} at ${j.company} ${d!==null?`${d} days ago`:'recently'}. Status: ${j.status}. Response: ${j.resp==='yes'?'Yes':'No reply'}. Should I follow up? Be specific.`,
+    'I\'m '+(userName||'a job seeker')+'. Applied for '+j.role+' at '+j.company+' '+(d!==null?d+' days ago':'recently')+'. Status: '+j.status+'. Response: '+(j.resp==='yes'?'Yes':'No reply')+'. Should I follow up? Be specific.',
     `Give me 5 targeted interview prep tips for ${j.role} at ${j.company}. Include likely questions and how to stand out.`,
     `I applied for ${j.role} at ${j.company}. Status: ${j.status}. Give me 3 concrete actions right now to improve my chances.`,
     `What are 5 smart, impressive questions I should ask ${j.company} during an interview for ${j.role}?`
   ];
-  const c=prompt(`AI tips for ${j.company} — ${j.role}\n\n${opts.map((o,i)=>`${i+1}. ${o}`).join('\n')}\n\nEnter 1–4 and press OK:`);
+  const c=prompt('AI tips for '+j.company+' — '+j.role+'\n\n'+opts.map(function(o,i){return (i+1)+'. '+o;}).join('\n')+'\n\nEnter 1–4 and press OK:');
   if(!c||isNaN(c)||+c<1||+c>4)return;
   const i=+c-1;
   const w=window.open('','_blank','width=620,height=520');
