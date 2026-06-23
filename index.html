@@ -464,62 +464,64 @@ function runScan() {
 
 async function doScan() {
   var allIds = {};
-  var queries = [
-    'application', 'interview', 'offer', 'hiring', 'career',
-    'thank you for applying', 'your application', 'we received',
-    'shortlisted', 'selected', 'rejected', 'regret', 'unfortunately',
-    'congratulations', 'next steps', 'resume'
+
+  // Use a single broad query to find all job-related emails fast
+  var broadQueries = [
+    'subject:application OR subject:interview OR subject:offer OR subject:hiring OR subject:shortlisted OR subject:rejected OR subject:regret OR subject:unfortunately OR subject:congratulations',
+    'from:greenhouse-mail OR from:workday OR from:lever OR from:icims OR from:myworkdayjobs OR from:careers OR from:recruiting OR from:talent'
   ];
 
-  for (var i = 0; i < queries.length; i++) {
+  setProgress(15, 'Searching inbox...');
+
+  for (var i = 0; i < broadQueries.length; i++) {
     try {
       var url = 'https://gmail.googleapis.com/gmail/v1/users/me/messages'
-        + '?q=' + encodeURIComponent('in:all ' + queries[i])
-        + '&maxResults=20';
+        + '?q=' + encodeURIComponent(broadQueries[i])
+        + '&maxResults=50';
       var res = await fetch(url, {headers: {Authorization: 'Bearer ' + gToken}});
       var data = await res.json();
       if (data.messages) {
         data.messages.forEach(function(m) { allIds[m.id] = true; });
       }
     } catch(e) {}
-    setProgress(10 + Math.round((i / queries.length) * 40), 'Searching...');
   }
 
-  var ids = Object.keys(allIds).slice(0, 60);
-  setProgress(50, 'Reading ' + ids.length + ' emails...');
+  var ids = Object.keys(allIds).slice(0, 40);
+  setProgress(40, 'Found ' + ids.length + ' emails — reading...');
 
+  // Batch fetch metadata in parallel (groups of 5)
   var details = [];
-  for (var j = 0; j < ids.length; j++) {
-    try {
-      var r = await fetch(
-        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + ids[j] + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date',
+  for (var j = 0; j < ids.length; j += 5) {
+    var batch = ids.slice(j, j + 5);
+    var promises = batch.map(function(id) {
+      return fetch(
+        'https://gmail.googleapis.com/gmail/v1/users/me/messages/' + id + '?format=metadata&metadataHeaders=Subject&metadataHeaders=From&metadataHeaders=Date',
         {headers: {Authorization: 'Bearer ' + gToken}}
-      );
-      var d = await r.json();
-      if (d.error) continue;
+      ).then(function(r) { return r.json(); }).catch(function() { return null; });
+    });
+    var results = await Promise.all(promises);
+    results.forEach(function(d) {
+      if (!d || d.error) return;
       var hdrs = d.payload && d.payload.headers ? d.payload.headers : [];
-      var subj = '';
-      var from = '';
-      var date = '';
+      var subj = '', from = '', date = '';
       hdrs.forEach(function(h) {
         if (h.name === 'Subject') subj = h.value;
         if (h.name === 'From') from = h.value;
         if (h.name === 'Date') date = h.value;
       });
       details.push({subject: subj, from: from, date: date, snippet: d.snippet || ''});
-    } catch(e) {}
-    if (j % 10 === 0) setProgress(50 + Math.round((j / ids.length) * 30), 'Reading emails...');
+    });
+    setProgress(40 + Math.round(((j + 5) / ids.length) * 45), 'Reading emails...');
   }
 
-  setProgress(80, 'Extracting job info...');
+  setProgress(90, 'Extracting job details...');
   var parsed = parseJobs(details);
   setProgress(100, 'Done!');
 
   document.getElementById('prog').style.display = 'none';
   document.getElementById('progTxt').style.display = 'none';
   var btn2 = document.getElementById('scanBtn');
-  btn2.disabled = false;
-  btn2.textContent = '\u21BB Scan Gmail';
+  if (btn2) { btn2.disabled = false; btn2.textContent = '↻ Scan Gmail'; }
 
   var imported = importJobs(parsed);
   showToast('Imported ' + imported + ' applications from Gmail');
@@ -1003,6 +1005,11 @@ function init() {
             show('app');
             setupUserUI();
             render();
+          }).catch(function() {
+            show('app');
+            setupUserUI();
+            render();
+            showToast('Scan complete — add apps manually if needed');
           });
         })
         .catch(function() { show('app'); render(); });
