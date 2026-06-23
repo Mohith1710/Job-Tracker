@@ -218,6 +218,7 @@ body{font-family:'Google Sans','Segoe UI',system-ui,sans-serif;background:var(--
 .fab:hover{background:var(--blue-dk)}
 .fab svg{width:17px;height:17px;fill:white}
 </style>
+<script src="https://accounts.google.com/gsi/client" async defer></script>
 </head>
 <body>
 
@@ -441,27 +442,48 @@ function toast(m){const t=document.getElementById('toast');t.textContent=m;t.cla
 
 // ── AUTH ──
 function startGoogleAuth(){
-  // Load Google Identity Services and do implicit OAuth
   document.getElementById('authScreen').style.display='none';
   document.getElementById('connectingScreen').style.display='flex';
-
-  const script=document.createElement('script');
-  script.src='https://accounts.google.com/gsi/client';
-  script.onload=initGoogleAuth;
-  script.onerror=()=>showAuthError('Could not load Google sign-in. Check your internet connection.');
-  document.head.appendChild(script);
+  setStep(1,'active');
+  // Try immediately if GSI already loaded, else wait for it
+  if(typeof google !== 'undefined' && google.accounts){
+    initGoogleAuth();
+  } else {
+    // Load script if not already loaded
+    if(!document.querySelector('script[src*="gsi/client"]')){
+      const s=document.createElement('script');
+      s.src='https://accounts.google.com/gsi/client';
+      s.onload=initGoogleAuth;
+      s.onerror=()=>showAuthError('Could not load Google sign-in library. Check your internet connection.');
+      document.head.appendChild(s);
+    } else {
+      // Script tag exists but not loaded yet — wait
+      let attempts=0;
+      const wait=setInterval(()=>{
+        attempts++;
+        if(typeof google !== 'undefined' && google.accounts){
+          clearInterval(wait);
+          initGoogleAuth();
+        } else if(attempts>20){
+          clearInterval(wait);
+          showAuthError('Google sign-in took too long to load. Please refresh and try again.');
+        }
+      },300);
+    }
+  }
 }
 
 function initGoogleAuth(){
   setStep(1,'done');setStep(2,'active');
-  // Use Google Identity Services token client
   try{
     const client=google.accounts.oauth2.initTokenClient({
-      // For a real deployment, replace with your OAuth Client ID from console.cloud.google.com
       client_id:'709096668492-k7uupqafl86svoegmj3dahf7nr0t7gjv.apps.googleusercontent.com',
       scope:SCOPES,
       callback:(resp)=>{
-        if(resp.error){showAuthError('Authorization cancelled or failed: '+resp.error);return;}
+        if(resp.error){
+          showAuthError('Authorization failed: '+resp.error+'. Make sure you added yourself as a test user in Google Cloud Console.');
+          return;
+        }
         gToken=resp.access_token;
         setStep(2,'done');
         fetchUserInfo().then(()=>{
@@ -471,9 +493,10 @@ function initGoogleAuth(){
         });
       }
     });
+    setStep(1,'done');
     client.requestAccessToken({prompt:'consent'});
   }catch(e){
-    showAuthError('Google sign-in failed. See setup instructions below.');
+    showAuthError('Google sign-in error: '+e.message+'. Please refresh and try again.');
   }
 }
 
