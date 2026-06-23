@@ -408,8 +408,9 @@ function showToast(msg) {
 // ── AUTH ──
 document.getElementById('signInBtn').onclick = function() {
   persist();
+  var REDIRECT = 'https://mohith1710.github.io/Job-Tracker';
   var params = 'client_id=' + encodeURIComponent(CLIENT_ID)
-    + '&redirect_uri=' + encodeURIComponent(window.location.href.split('#')[0])
+    + '&redirect_uri=' + encodeURIComponent(REDIRECT)
     + '&response_type=token'
     + '&scope=' + encodeURIComponent(SCOPES)
     + '&prompt=consent'
@@ -465,8 +466,9 @@ function reAuth() {
   localStorage.removeItem('jt-name');
   userEmail = '';
   userName = '';
+  var REDIRECT = 'https://mohith1710.github.io/Job-Tracker';
   var params = 'client_id=' + encodeURIComponent(CLIENT_ID)
-    + '&redirect_uri=' + encodeURIComponent(window.location.href.split('#')[0])
+    + '&redirect_uri=' + encodeURIComponent(REDIRECT)
     + '&response_type=token'
     + '&scope=' + encodeURIComponent(SCOPES)
     + '&prompt=consent'
