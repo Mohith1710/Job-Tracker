@@ -408,14 +408,60 @@ function showToast(msg) {
 // ── AUTH ──
 document.getElementById('signInBtn').onclick = function() {
   persist();
-  var REDIRECT = 'https://mohith1710.github.io/Job-Tracker';
-  var params = 'client_id=' + encodeURIComponent(CLIENT_ID)
-    + '&redirect_uri=' + encodeURIComponent(REDIRECT)
-    + '&response_type=token'
-    + '&scope=' + encodeURIComponent(SCOPES)
-    + '&prompt=consent'
-    + '&include_granted_scopes=true';
-  window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+  // Use Google Identity Services token client - works with Web application type
+  function initAndRequest() {
+    try {
+      var tokenClient = google.accounts.oauth2.initTokenClient({
+        client_id: CLIENT_ID,
+        scope: SCOPES,
+        callback: function(resp) {
+          if (resp.error) {
+            console.error('Auth error:', resp.error);
+            document.querySelector('.auth-card').innerHTML += '<div style="background:#fce8e6;padding:12px;border-radius:8px;margin-top:12px;font-size:13px;color:#d93025">Auth failed: ' + resp.error + '. Try refreshing the page.</div>';
+            return;
+          }
+          gToken = resp.access_token;
+          show('connect');
+          setStep(1,'done'); setStep(2,'active');
+          fetch('https://www.googleapis.com/oauth2/v3/userinfo', {headers:{Authorization:'Bearer '+gToken}})
+            .then(function(r){return r.json();})
+            .then(function(d){
+              userEmail = d.email||'';
+              userName = d.name||d.email||'';
+              localStorage.setItem('jt-email', userEmail);
+              localStorage.setItem('jt-name', userName);
+              setStep(2,'done'); setStep(3,'active');
+              document.getElementById('connSub').textContent = 'Scanning inbox...';
+              doScan().then(function(){
+                setStep(3,'done'); setStep(4,'done');
+                show('app'); setupUserUI(); render();
+              }).catch(function(){
+                show('app'); setupUserUI(); render();
+              });
+            }).catch(function(){
+              show('app'); render();
+            });
+        }
+      });
+      tokenClient.requestAccessToken({prompt:'consent'});
+    } catch(e) {
+      console.error('GIS error:', e);
+      document.querySelector('.auth-card').innerHTML += '<div style="background:#fce8e6;padding:12px;border-radius:8px;margin-top:12px;font-size:13px;color:#d93025">Could not load Google Sign-in: ' + e.message + '</div>';
+    }
+  }
+
+  if (typeof google !== 'undefined' && google.accounts && google.accounts.oauth2) {
+    initAndRequest();
+  } else {
+    // Load GIS script if not already loaded
+    var s = document.createElement('script');
+    s.src = 'https://accounts.google.com/gsi/client';
+    s.onload = initAndRequest;
+    s.onerror = function() {
+      alert('Could not load Google Sign-in. Check your internet connection.');
+    };
+    document.head.appendChild(s);
+  }
 };
 
 document.getElementById('skipBtn').onclick = function() {
@@ -460,20 +506,16 @@ function setProgress(pct, txt) {
 }
 
 function reAuth() {
-  // Clear token and redirect to Google sign in again
   gToken = null;
   localStorage.removeItem('jt-email');
   localStorage.removeItem('jt-name');
   userEmail = '';
   userName = '';
-  var REDIRECT = 'https://mohith1710.github.io/Job-Tracker';
-  var params = 'client_id=' + encodeURIComponent(CLIENT_ID)
-    + '&redirect_uri=' + encodeURIComponent(REDIRECT)
-    + '&response_type=token'
-    + '&scope=' + encodeURIComponent(SCOPES)
-    + '&prompt=consent'
-    + '&include_granted_scopes=true';
-  window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
+  show('auth');
+  // Trigger sign in button click after short delay
+  setTimeout(function() {
+    document.getElementById('signInBtn').click();
+  }, 300);
 }
 
 function runScan() {
